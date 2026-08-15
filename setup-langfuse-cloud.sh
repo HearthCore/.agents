@@ -10,19 +10,21 @@
 # WHERE IT WRITES
 #   Primary:  <repo>/.claude/settings.json — cloud sessions only honour
 #             repository + server-managed settings (user-level settings stay
-#             on the machine, per Anthropic docs), so a session MUST have a
-#             repository attached for the plugin to activate.
+#             on the machine, per Anthropic docs), so the DECLARATION belongs
+#             committed directly into the repo. This script exists for
+#             environments where the setup runs before the repo is cloned
+#             and the repo settings cannot be committed up front.
 #   Fallback: $HOME/.claude/settings.json — written best-effort; may help in
 #             self-hosted setups, normally ignored by Anthropic-hosted cloud.
 #
-# KEYS / SECRETS
-#   No keys are embedded. The Langfuse hook reads LANGFUSE_PUBLIC_KEY /
-#   LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL from the process environment at
-#   runtime (env vars take precedence over plugin config in the plugin
-#   source). Cloud Environment variables are copied into the VM environment,
-#   so the hook — running as a subprocess of Claude Code — sees them.
-#   If the env vars are visible to this script (local repos, exported
-#   shells), they are additionally written into pluginConfigs as a fallback.
+# SECRETS / KEYS
+#   This script NEVER writes keys into any file. The Langfuse hook reads
+#   LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL from the
+#   process environment at runtime (env vars take precedence over plugin
+#   config in the plugin source, see _core_opt). Cloud Environment variables
+#   are copied into the VM as ordinary process env vars, so the hook — running
+#   as a subprocess of Claude Code — sees them without any file round-trip.
+#   Set them as Environment Variables in the claude.ai/code Cloud Environment.
 #
 # Exit codes: 0 = success (config ensured or clearly reported), 1 = hard error.
 # =============================================================================
@@ -54,7 +56,6 @@ ensure_langfuse() {
 
     local tmp; tmp="$(mktemp)"
     local next; next="$(mktemp)"
-    local tmp2=""
 
     if [ -f "$target" ] && jq -e . "$target" >/dev/null 2>&1; then
         jq . "$target" > "$tmp"
@@ -74,23 +75,6 @@ ensure_langfuse() {
       | .plugins.enabledPlugins |= (if index("langfuse-observability@langfuse-observability") then . else . + ["langfuse-observability@langfuse-observability"] end)
     ' "$tmp" > "$next"
 
-    local embedded=0
-    if [ -n "${LANGFUSE_PUBLIC_KEY:-}" ] && [ -n "${LANGFUSE_SECRET_KEY:-}" ]; then
-        local tmp2; tmp2="$(mktemp)"
-        jq --arg pk "$LANGFUSE_PUBLIC_KEY" \
-           --arg sk "$LANGFUSE_SECRET_KEY" \
-           --arg b64 "${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}" \
-          '.pluginConfigs["langfuse-observability@langfuse-observability"] = {
-             "options": {
-               "LANGFUSE_PUBLIC_KEY": $pk,
-               "LANGFUSE_SECRET_KEY": $sk,
-               "LANGFUSE_BASE_URL": $b64
-             }
-           }' "$next" > "$tmp2"
-        mv "$tmp2" "$next"
-        embedded=1
-    fi
-
     if [ -f "$target" ] && cmp -s "$target" "$next"; then
         echo "OK: Langfuse config already present and correct in $target (nothing to do)"
     else
@@ -98,14 +82,7 @@ ensure_langfuse() {
         echo ">> Langfuse config written to $target"
     fi
 
-    if [ "$embedded" -eq 0 ]; then
-        echo ">> INFO: LANGFUSE_* env vars not visible here (normal in cloud setup) —"
-        echo ">>       the hook reads them from the Claude Code process at runtime."
-    else
-        echo ">> LANGFUSE_* env vars found — embedded into pluginConfigs as fallback."
-    fi
-
-    rm -f "$tmp" "$next" "$tmp2" 2>/dev/null || true
+    rm -f "$tmp" "$next" 2>/dev/null || true
 }
 
 for t in "${TARGETS[@]}"; do
@@ -128,3 +105,6 @@ else
 fi
 
 echo "DONE."
+echo ">> HINWEIS: Keys kommen zur Laufzeit aus den Cloud-Environment-Env-Vars"
+echo ">> (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL) — dieses"
+echo ">> Script schreibt bewusst KEINE Secrets in Dateien."
