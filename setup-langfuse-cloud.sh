@@ -105,6 +105,29 @@ else
     fi
 fi
 
+# --- Ensure plugin actually installed (not just declared) --------------------
+# settings.json only declares the plugin; the hook that sends traces is
+# registered only once the marketplace repo is cloned and the plugin is
+# installed. Declaring alone left cloud sessions with 0 traces (verified via
+# `claude plugin list` = empty, ~/.claude/plugins missing). Install
+# best-effort here so fresh sessions start with a working hook.
+if command -v claude >/dev/null 2>&1; then
+    if claude plugin list 2>/dev/null | grep -q "langfuse-observability@langfuse-observability"; then
+        echo "OK: langfuse-observability plugin already installed"
+    else
+        echo ">> Installing langfuse-observability plugin..."
+        claude plugin marketplace add langfuse/Claude-Observability-Plugin >/dev/null 2>&1 || true
+        if claude plugin install langfuse-observability@langfuse-observability >/dev/null 2>&1; then
+            echo "OK: plugin installed (scope: user)"
+        else
+            echo ">> WARN: plugin install failed — install manually via '/plugin install'"
+            echo ">>       langfuse-observability@langfuse-observability in Claude Code."
+        fi
+    fi
+else
+    echo ">> INFO: claude CLI not on PATH — plugin install skipped (declaration only)."
+fi
+
 echo "DONE."
 echo ">> HINWEIS: Keys kommen zur Laufzeit aus den Cloud-Environment-Env-Vars"
 echo ">> (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL) — dieses"
