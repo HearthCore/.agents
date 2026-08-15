@@ -8,23 +8,24 @@
 # Observability plugin.
 #
 # WHERE IT WRITES
-#   Primary:  <repo>/.claude/settings.json — cloud sessions only honour
-#             repository + server-managed settings (user-level settings stay
-#             on the machine, per Anthropic docs), so the DECLARATION belongs
-#             committed directly into the repo. This script exists for
-#             environments where the setup runs before the repo is cloned
-#             and the repo settings cannot be committed up front.
-#   Fallback: $HOME/.claude/settings.json — written best-effort; may help in
-#             self-hosted setups, normally ignored by Anthropic-hosted cloud.
+#   Config (no secrets):
+#     Primary:  <repo>/.claude/settings.json — cloud sessions only honour
+#               repository + server-managed settings (user-level settings
+#               stay on the machine, per Anthropic docs), so a session MUST
+#               have a repository attached for the plugin to activate.
+#     Fallback: $HOME/.claude/settings.json — written best-effort; may help
+#               in self-hosted setups, normally ignored by Anthropic-hosted
+#               cloud.
 #
-# SECRETS / KEYS
+# KEYS / SECRETS
 #   This script NEVER writes keys into any file. The Langfuse hook reads
 #   LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL from the
-#   process environment at runtime (env vars take precedence over plugin
-#   config in the plugin source, see _core_opt). Cloud Environment variables
-#   are copied into the VM as ordinary process env vars, so the hook — running
-#   as a subprocess of Claude Code — sees them without any file round-trip.
-#   Set them as Environment Variables in the claude.ai/code Cloud Environment.
+#   process environment at runtime — env vars take precedence over plugin
+#   config in the plugin source, see _core_opt. Cloud Environment Variables
+#   set via claude.ai are copied straight into the VM's process environment,
+#   so the hook — running as a subprocess of Claude Code — sees them without
+#   any file round-trip. Set them as Environment Variables in the Cloud
+#   Environment; do not store them in this repo.
 #
 # Exit codes: 0 = success (config ensured or clearly reported), 1 = hard error.
 # =============================================================================
@@ -48,7 +49,7 @@ else
 fi
 TARGETS+=("$HOME/.claude/settings.json")   # best-effort fallback
 
-# --- Ensure Langfuse plugin declaration in one settings.json -----------------
+# --- Ensure Langfuse plugin declaration in one settings.json (no secrets) ----
 ensure_langfuse() {
     local target="$1"
     local dir; dir="$(dirname "$target")"

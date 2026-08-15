@@ -1,9 +1,5 @@
-# Local environment files — never commit
+
+# Local secrets (Langfuse keys etc.) — never commit
 .env
 .env.*
 !.env.example
-
-# Python
-__pycache__/
-*.pyc
-.venv/

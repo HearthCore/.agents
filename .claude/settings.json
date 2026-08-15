@@ -1,0 +1,15 @@
+{
+  "plugins": {
+    "extraKnownMarketplaces": {
+      "langfuse-observability": {
+        "source": {
+          "source": "github",
+          "repo": "langfuse/Claude-Observability-Plugin"
+        }
+      }
+    },
+    "enabledPlugins": [
+      "langfuse-observability@langfuse-observability"
+    ]
+  }
+}
