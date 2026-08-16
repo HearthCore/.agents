@@ -76,43 +76,100 @@ need a local copy for manual testing, write it to `~/.openviking/ovcli.conf`
 directly — never under this repo's working tree, gitignored or not (git add
 -A / a misconfigured hook is one command away from committing it anyway).
 
-## Known issue — OpenViking commit threshold not confirmed firing (open)
+## Resolved — OpenViking hooks silently wrote nothing (Node ignores HTTPS_PROXY)
 
-Observed in a live cloud session (2026-08-16, plugin installed + enabled,
-`OPENVIKING_MEMORY_ENABLED=1` set, auth confirmed working):
+Root-caused in a live cloud session (2026-08-16, plugin 0.4.4, server
+v0.4.13). The earlier "commit threshold not confirmed firing" symptom was
+real, but the threshold was never the problem: **no HTTP request the hooks
+made ever reached the OpenViking API.** Capture and recall both looked
+healthy and both silently did nothing.
 
-- **Recall** works: fires on every user prompt, reaches the server
-  (~2.2s latency), returns `count: 0, reason: "no_results"` on an empty
-  profile — expected for a fresh session.
-- **Capture** works at the push level: `~/.openviking/state/last-capture.json`
-  showed `turns_captured: 8, turns_queued: 0, turns_failed: 0` — pushes to
-  the server succeed.
-- **Not yet confirmed:** whether a commit ever actually fires. `auto-capture.mjs`
-  polls the server's session meta after each push and only calls
-  `commitSession` once `pending_tokens >= 20000` (default
-  `OPENVIKING_COMMIT_THRESHOLD` — check the actual env var name in the
-  plugin source before changing it). The server was reporting
-  `pending_tokens: 0` and `total_message_count: 0` back despite 8 accepted
-  turns. Two readings, not yet distinguished:
-  1. Expected — a fresh session hasn't hit 20k tokens yet, meta just
-     hasn't caught up. Resolves itself.
-  2. A real bug — `getSession` returns null/errors and
-     `Number(meta?.pending_tokens || 0)` silently coalesces that to 0, so
-     the threshold never crosses and nothing ever commits/extracts, and
-     recall stays `no_results` forever even after real usage.
-- `~/.openviking/last_inject.md` was never written this session (consistent
-  with an empty profile, not itself evidence of a bug).
-- **Next diagnostic step (not yet run at time of writing):** set
-  `OPENVIKING_DEBUG=1` and watch a few turns — `auto-capture.mjs:722`
-  (line number as of the version installed then; re-check on a fresh
-  install) logs the raw `pending_tokens` it reads each turn, which tells
-  you directly whether the server value is genuinely 0 or the fetch is
-  failing and being swallowed.
+### The chain
 
-If you pick this up: check `~/.openviking/logs/` (only exists once
-`OPENVIKING_DEBUG=1` has run), `~/.openviking/state/last-capture.json`, and
-`~/.openviking/state/last-recall.json` for current state before
-re-deriving from scratch.
+1. `viking.goetzken.dev` sits behind a **Pangolin auth proxy**. A request
+   that does not go through the cloud environment's egress proxy gets a
+   `302` to `pangolin.goetzken.dev/auth/resource/...`.
+2. **Node's `fetch` (undici) does not honour `HTTPS_PROXY`/`https_proxy`.**
+   `curl` does. So every hook request bypassed the egress proxy, followed
+   the 302, and landed on the web UI — `HTTP 200`, `content-type: text/html`.
+3. `fetchJSON` (`scripts/lib/ov-session.mjs`) does
+   `const body = await res.json().catch(() => ({}))`. The HTML parse failure
+   is swallowed into `{}`, and the success test is only
+   `if (!res.ok || body.status === "error")`. A 200 + HTML therefore returns
+   **`{ ok: true, result: {} }`** — indistinguishable from success.
+4. From there everything degrades quietly:
+   - `sendSessionMessages` (`scripts/shared/batch-send.mjs`) does
+     `result.sent += chunk.length` on `res.ok` without ever checking the
+     server's own `result.added`. So `last-capture.json` reported
+     `turns_captured: 130` while the server held **zero** messages.
+   - `getSession` returns `{}`, so
+     `Number(meta?.pending_tokens || 0)` → `0` — the exact silent coalesce
+     hypothesis 2 predicted, just triggered by an HTML 200 rather than a
+     network error. The threshold never crosses, nothing ever commits.
+   - `/health` also returned HTML 200, so `health.ok` was true and the
+     retryable/pending-queue path never engaged either.
+   - Recall hits `/api/v1/search/recall` the same way and gets `{}` →
+     `count: 0, reason: "no_results"` forever, on any query.
+
+Confirmation that the pushes really were lost: `GET /api/v1/sessions/{id}`
+returned `404 NOT_FOUND` for a session the hook had just reported
+`push_turns ok:49` on.
+
+### The fix
+
+Set **`NODE_USE_ENV_PROXY=1`** in the Cloud Environment Variables (same
+place as the other vars — see the secrets model above). It makes undici
+honour the proxy env vars via `EnvHttpProxyAgent`. Verified working on the
+Node 22.22 image here; it prints an experimental-API warning to stderr,
+which is harmless. `NODE_OPTIONS=--use-env-proxy` is the Node 24+
+equivalent if the image ever moves up.
+
+End-to-end verification after setting it — same transcript, same hook:
+
+```
+captured 130 turns to ov session cc-… (committed)
+last-capture.json: total_message_count 130, pending_tokens 28848,
+                   commit_threshold 20000, committed true, commit_count 1
+server meta:       message_count 10 (keep_recent_count), commit_count 1
+```
+
+So the commit threshold fires correctly once requests actually arrive. The
+20000-token default is reachable in a single working session (~130 turns).
+
+### Two upstream bugs worth reporting to OpenViking
+
+Both are real regardless of the proxy issue — they are what turned a
+connectivity problem into a silent one:
+
+1. `fetchJSON` treats a non-JSON `200` as success. It should verify
+   `content-type` is JSON (or that the body actually parsed) before
+   returning `ok: true`.
+2. `sendSessionMessages` trusts `chunk.length` instead of the server's
+   `result.added`, so it over-reports accepted messages.
+
+A third, milder one: `commitSession` reports `ok: true` for a server
+response of `{"status":"skipped","archived":false,
+"reason":"all_within_keep_window"}` — `commitRes.ok` only reflects the HTTP
+envelope, not the inner `result.status`, so `committed: true` can be logged
+for a commit that archived nothing.
+
+### Debugging notes for next time
+
+- `~/.openviking/logs/cc-hooks.log` only exists once `OPENVIKING_DEBUG=1`
+  has run. Also check `~/.openviking/state/last-capture.json` and
+  `last-recall.json` before re-deriving anything.
+- The hooks **detach**: `maybeDetach` (`scripts/shared/async-writer.mjs`)
+  spawns `node <script>` with `OV_HOOK_WORKER=1` and the parent approves
+  immediately. Instrumenting the parent (a `--import` fetch tap, an
+  `OPENVIKING_URL` pointed at a local proxy) sees nothing, because the flag
+  is not passed to the child. Set `OV_HOOK_WORKER=1` yourself to force the
+  whole thing synchronous in a process you control.
+- To force a re-capture, reset the cursor in
+  `/tmp/openviking-cc-capture-state/<cc-session-id>.json` to
+  `{"capturedTurnCount":0}` and pipe a `Stop` hook payload into
+  `auto-capture.mjs`.
+- Trust the server, not the hook logs: `GET /api/v1/sessions/{id}` via
+  `curl` is the only statement about what actually landed.
 
 ## Working conventions
 
