@@ -6,10 +6,17 @@
           "source": "github",
           "repo": "langfuse/Claude-Observability-Plugin"
         }
+      },
+      "openviking": {
+        "source": {
+          "source": "url",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/main/.claude-plugin/marketplace.json"
+        }
       }
     },
     "enabledPlugins": [
-      "langfuse-observability@langfuse-observability"
+      "langfuse-observability@langfuse-observability",
+      "openviking-memory@openviking"
     ]
   }
 }
