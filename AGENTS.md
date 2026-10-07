@@ -153,6 +153,25 @@ response of `{"status":"skipped","archived":false,
 envelope, not the inner `result.status`, so `committed: true` can be logged
 for a commit that archived nothing.
 
+**Re-checked 2026-10-07 against plugin 0.7.3** (commit `81805e9`, server
+v0.4.23): all three are still present in the Claude Code plugin.
+
+- (1) The HTTP helper moved to `scripts/shared/ov-http.mjs` and gained a
+  `requireJsonBody` option that rejects a body that did not parse as JSON —
+  but `makeFetchJSON` (`scripts/lib/ov-session.mjs`) never sets it, so the
+  CC hooks still treat an HTML `200` as `ok: true, result: {}`.
+- (2) `sendSessionMessages` (`scripts/shared/batch-send.mjs`) still does
+  `result.sent += chunk.length` on `res.ok`.
+- (3) `auto-capture.mjs` still sets `committed = commitRes.ok`.
+
+`NODE_USE_ENV_PROXY=1` therefore remains mandatory, not just historical.
+
+The marketplace entry pins the plugin to `ref: main` (git-subdir), so every
+new cloud session installs whatever is on upstream `main` at that moment —
+there is no version pin. Check the installed version with
+`~/.claude/plugins/installed_plugins.json` and compare `gitCommitSha` with
+`git ls-remote https://github.com/volcengine/OpenViking.git refs/heads/main`.
+
 ### Debugging notes for next time
 
 - `~/.openviking/logs/cc-hooks.log` only exists once `OPENVIKING_DEBUG=1`
